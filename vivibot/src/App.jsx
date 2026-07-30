@@ -834,10 +834,6 @@ const KB_EN = [
 
 const KB = (lang) => (lang === "en" ? KB_EN : KB_PT);
 
-const MANUAL_ = (lang) => KB(lang).map(
-  (s) => `## ${s.num} — ${s.title}\n` + s.blocks.map((b) => `### ${b.h}\n` + b.items.map((i) => `- ${i}`).join("\n")).join("\n")
-).join("\n\n");
-
 /* ---------- Routing (bilingue) ---------- */
 const QUEUES = {
   support: { pt: "Support", en: "Support", tone: "plum" },
@@ -1800,11 +1796,7 @@ const UI = {
       "O que registo no Salesforce quando ninguém atende a chamada de acquisition?",
     ],
     placeholder: "Escreve a situação…", send: "Enviar",
-    mLocal: "Local", mAI: "IA",
-    dLocal: "responde offline, só a partir do manual",
-    dAI: "usa a API da Anthropic, entende melhor o contexto",
-    viaLocal: "motor local · sem ligação", viaAI: "modo IA",
-    apiErr: "O modo IA não respondeu — aqui fica a resposta do motor local.",
+    viaLocal: "motor local · sem ligação",
     rEyebrow: "Secção 03 · Refund Queue", rTitle: "Aprovo ou não?",
     rBlurb: "Preenche os factos do caso. A decisão e a cadeia de regras atualizam sozinhas.",
     rFacts: "Factos do caso", rReason: "Razão indicada pelo TP",
@@ -1843,11 +1835,7 @@ const UI = {
       "What do I log in Salesforce when nobody answers an acquisition call?",
     ],
     placeholder: "Describe the situation…", send: "Send",
-    mLocal: "Local", mAI: "AI",
-    dLocal: "answers offline, from the manual only",
-    dAI: "uses the Anthropic API, better at context",
-    viaLocal: "local engine · offline", viaAI: "AI mode",
-    apiErr: "AI mode didn't respond — here's the local engine's answer instead.",
+    viaLocal: "local engine · offline",
     rEyebrow: "Section 03 · Refund Queue", rTitle: "Approve or not?",
     rBlurb: "Fill in the facts of the case. The decision and the rule chain update as you go.",
     rFacts: "Case facts", rReason: "Reason given by the TP",
@@ -2050,57 +2038,29 @@ function Chibi({ size = 96, onReplay }) {
 /* ============================================================
    Perguntar
    ============================================================ */
-const SYSTEM = (lang) =>
-  lang === "en"
-    ? "You are ViviBot, the copilot for the MyBuilder · InstaPro Customer Service team. You answer agents who are mid-case and need to know what to do next.\n\nRULES\n1. Answer EXCLUSIVELY from the manual below. If the answer isn't there, say so plainly and tell them to check with their Team Lead. Never invent numbers, deadlines, field names or templates.\n2. Answer in the language of the question. Always keep operational terms in English: queue names, Salesforce fields, wrap-up codes, Case Reason, Hold & Check, Important Notes.\n3. Format: one verdict sentence first (what to do), then a numbered list of concrete, actionable steps. One action per step. No preamble.\n4. If the scenario is one of the escalation triggers (legal, media/PR, identity theft, GDPR, defamation, external authorities), open with \"ESCALATE IMMEDIATELY\" before anything else.\n5. If information is missing to decide (days since shortlist, ratio, lead value, whether the TP is new or established), say what each step depends on rather than assuming.\n6. Be brief and friendly. The agent is reading this with a customer on the line.\n\nMANUAL\n" + MANUAL_("en")
-    : "És a ViviBot, a assistente da equipa de Customer Service do MyBuilder · InstaPro. Respondes a agentes que estão a meio de um caso e precisam de saber o que fazer a seguir.\n\nREGRAS\n1. Responde EXCLUSIVAMENTE com base no manual abaixo. Se a resposta não estiver lá, diz claramente que o manual não cobre esse ponto e manda falar com o Team Lead. Nunca inventes números, prazos, nomes de campos ou templates.\n2. Responde na língua da pergunta. Mantém sempre em inglês os termos operacionais: nomes de queues, campos de Salesforce, wrap-up codes, Case Reason, Hold & Check, Important Notes.\n3. Formato: uma frase de veredito primeiro (o que fazer), depois uma lista numerada de passos concretos e acionáveis. Cada passo diz uma ação. Sem preâmbulos.\n4. Se o cenário for um dos gatilhos de escalação (legal, media/PR, roubo de identidade, GDPR, difamação, autoridades externas), começa a resposta por \"ESCALAR IMEDIATAMENTE\" antes de qualquer outra coisa.\n5. Se faltar informação para decidir (dias desde o shortlist, rácio, valor do lead, se o TP é novo ou estabelecido), diz que passo depende de quê, em vez de assumires.\n6. Sê breve e simpático. Um agente lê isto com um cliente em linha.\n\nMANUAL\n" + MANUAL_("pt");
-
 function Ask({ lang }) {
   const u = UI[lang];
   const [msgs, setMsgs] = useState([]);
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState(null);
-  const [mode, setMode] = useState("local");
   const [wave, setWave] = useState(0);
   const ctx = useRef({ slots: {}, pending: null, topic: null });
   const end = useRef(null);
 
   useEffect(() => { end.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [msgs, busy]);
 
-  async function send(text) {
+  function send(text) {
     const t = (text ?? q).trim();
     if (!t || busy) return;
     const next = [...msgs, { role: "user", content: t }];
-    setMsgs(next); setQ(""); setBusy(true); setErr(null);
+    setMsgs(next); setQ(""); setBusy(true);
 
-    if (mode === "local") {
-      const r = processTurn(t, ctx.current, lang);
-      ctx.current = r.ctx;
-      setTimeout(() => {
-        setMsgs([...next, { role: "assistant", content: r.content, chips: r.chips, via: "local" }]);
-        setBusy(false);
-      }, 240);
-      return;
-    }
-    try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-6", max_tokens: 1000, system: SYSTEM(lang),
-          messages: next.slice(-8).map((m) => ({ role: m.role, content: m.content })),
-        }),
-      });
-      const data = await res.json();
-      const out = (data.content || []).map((c) => (c.type === "text" ? c.text : "")).filter(Boolean).join("\n");
-      if (!out) throw new Error("empty");
-      setMsgs([...next, { role: "assistant", content: out, via: "ia" }]);
-    } catch (e) {
-      setErr(u.apiErr);
-      const r = processTurn(t, ctx.current, lang);
-      ctx.current = r.ctx;
-      setMsgs([...next, { role: "assistant", content: r.content, chips: r.chips, via: "local" }]);
-    } finally { setBusy(false); }
+    const r = processTurn(t, ctx.current, lang);
+    ctx.current = r.ctx;
+    setTimeout(() => {
+      setMsgs([...next, { role: "assistant", content: r.content, chips: r.chips }]);
+      setBusy(false);
+    }, 240);
   }
 
   return (
@@ -2134,7 +2094,7 @@ function Ask({ lang }) {
                 <div className="card" style={{ padding: "15px 18px", borderRadius: "20px 20px 20px 6px" }}>
                   <Answer text={m.content} />
                   <div className="mono" style={{ fontSize: 10, color: "#A793B0", marginTop: 10, letterSpacing: ".05em" }}>
-                    {m.via === "ia" ? u.viaAI : u.viaLocal}
+                    {u.viaLocal}
                   </div>
                 </div>
                 {i === msgs.length - 1 && m.chips && m.chips.length > 0 && (
@@ -2157,23 +2117,10 @@ function Ask({ lang }) {
             </div>
           </div>
         )}
-        {err && (
-          <div className="soft" style={{ padding: "12px 16px", borderColor: TONE.reject.br, background: TONE.reject.bg, color: TONE.reject.fg, fontSize: 13.5, fontWeight: 700, marginBottom: 16 }}>
-            {err}
-          </div>
-        )}
         <div ref={end} />
       </div>
 
       <div style={{ borderTop: "2px solid #EDE4F2", background: "#fff", padding: "10px 12px 12px" }}>
-        <div style={{ display: "flex", gap: 9, alignItems: "center", marginBottom: 9, flexWrap: "wrap" }}>
-          <div className="tabs" style={{ padding: 3, flex: "none" }}>
-            {[["local", u.mLocal], ["ia", u.mAI]].map(([id, l]) => (
-              <button key={id} className="tab" style={{ fontSize: 12, padding: "5px 14px" }} data-on={mode === id ? "1" : "0"} onClick={() => setMode(id)}>{l}</button>
-            ))}
-          </div>
-          <span style={{ fontSize: 11.5, color: "#6B5578", fontWeight: 700 }}>{mode === "local" ? u.dLocal : u.dAI}</span>
-        </div>
         <div style={{ display: "flex", gap: 9 }}>
           <input type="text" value={q} placeholder={u.placeholder} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} />
           <button className="btn" onClick={() => send()} disabled={busy || !q.trim()}>{u.send}</button>
